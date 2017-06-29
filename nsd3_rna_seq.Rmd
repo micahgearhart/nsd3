@@ -1,0 +1,348 @@
+---
+title: "Untitled"
+author: "Micah Gearhart"
+date: "11/21/2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+library("biomaRt")
+library("GenomicFeatures")
+library("DESeq2")
+library("dplyr")
+library("ggplot2")
+library("rentrez")
+library("googlesheets")
+
+swl<- function(x) {as.numeric(sapply(strsplit(as.character(x),":|-"),function(x) x[2]))}
+wls<- function(x) { paste0(seqnames(x),":",start(x),"-",end(x))}
+
+ts<-format(Sys.time(), "%a_%b_%d_%Y_%H%M")
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+```
+
+
+```{r}
+listMarts()
+ensembl_86<-useMart(biomart="ENSEMBL_MART_ENSEMBL",host = "useast.ensembl.org", dataset="ggallus_gene_ensembl")
+txdb86<-makeTxDbFromBiomart(biomart="ENSEMBL_MART_ENSEMBL",host="useast.ensembl.org", dataset="ggallus_gene_ensembl")
+#saveDb(txdb86,"~/txdb86_ggallus.sqlite")
+#loadDb("~/txdb86_ggallus.sqlite")
+ens86<-exonsBy(txdb86,by="gene")
+gen86<-genes(txdb86)
+tra86<-transcripts(txdb86,columns=c("gene_id","tx_name"))
+
+attributes<-listAttributes(mart=ensembl_86)
+symbols <-  getBM(attributes = c("ensembl_gene_id","hgnc_symbol","entrezgene","gene_biotype","wikigene_name"), 
+                  filters = "ensembl_gene_id", 
+                  values = names(ens86), mart = ensembl_86)
+
+symbols[symbols$wikigene_name %in% c("SOX10","SNAI2","WHSC1L1","ACTB","SOX9","ACTB","DMRT1","BCOR"),]
+symbols[symbols$entrezgene %in% c("418574","432368","426778","396526","396526","769693","395573"),]
+
+#BCOR is a listed transcript but is un-named.
+symbols[symbols$ensembl_gene_id %in% c("ENSGALG00000016245"),]
+
+save(ens86,gen86,file="ens86_chick.rdata")
+save(symbols,file="symbols86_chick.rdata")
+# load CGNC data from 2012  from http://birdgenenames.org
+birdnames<-as.data.frame(readr::read_tsv("cgnc.txt"))
+birdnames<-birdnames[!is.na(birdnames$`CGNC id`),]
+#NSD3 is also known as WHSC1L1 
+(temp<-birdnames[birdnames$`gene symbol` %in% c("SOX10","SNAI2","WHSC1L1","ACTB","SOX9","ACTB","DMRT1","BCOR"),])
+
+
+getBM(attributes = c("ensembl_gene_id","hgnc_symbol","entrezgene","wikigene_name","gene_biotype"), 
+                  filters = "ensembl_gene_id", 
+                  values = c("ENSGALG00000010160","ENSGALG00000016245","ENSGALG00000032795"), mart = ensembl_86)
+```
+
+```{r}
+load("gammilll_Project_003_genehits_ens86_Mon_Nov_21_2016_1355.rdata")
+as.data.frame(apply(assays(genehits)$counts,2,sum))
+
+filenames<-colnames(genehits)
+dds<-DESeqDataSet(genehits,design=~1)
+
+colData(dds)$filename<-filenames
+colnames(dds)<-gsub(".Aligned.out.bam","",colnames(dds))
+colData(dds)$group<-filenames %>% stringr::str_extract("CON|NSD3MO") %>% as.factor
+
+plotPCA( normTransform( dds ) ,intgroup = c("group"),ntop=50)+
+  ggtitle("NSD3 Morpholino vs Control") + theme_bw()
+
+# "Mon Jan 30 22:17:33 2017"  - Found out two samples didn't pass QC
+#dds2<-dds[,c(1:5,8:10)]
+#plotPCA( normTransform( dds2 ) ,intgroup = c("group"),ntop=50)+
+#  ggtitle("NSD3 Morpholino vs Control") + theme_bw()
+
+design(dds)<-(~group)
+dds<-DESeq(dds)
+resultsNames(dds)
+summary(res<-results(dds, contrast=c("group","NSD3MO","CON"),alpha=0.05,lfcThreshold = 0))
+
+
+summary(idx<-match(rownames(res),symbols$ensembl_gene_id))
+res$biotype<-symbols[idx,"gene_biotype"]
+res$wiki<-symbols[idx,"wikigene_name"]
+res$hgnc<-symbols[idx,"hgnc_symbol"]
+res$entrez<-symbols[idx,"entrezgene"]
+
+idx2<-match(rownames(res),birdnames$`Ensembl id`)
+res$bird_symbol<-as.character(birdnames[idx2,"gene symbol"])
+res$bird_entrez<-as.character(birdnames[idx2,"Entrez Gene id"])
+#res$bird_description<-as.character(birdnames[idx2,"gene name"])
+
+genelocs<-wls(gen86)
+names(genelocs)<-names(gen86)
+res$geneloc<-genelocs[rownames(res)]
+sum(is.na(res$padj))
+res2<-subset(res,abs(log2FoldChange) > 0.3 & padj < 0.05 )
+sum(is.na(res2$padj))
+
+
+
+#clean up results file
+
+table(res2$biotype)
+#res2<-res2[res2$biotype=="lincRNA",]
+res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"hgnc"]
+res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"bird_symbol"]
+#res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"symbol"]
+#res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"symbol2"]
+sum(res2[,"wiki"]=="")
+#View(res2)
+
+f<-round(fpkm(dds,robust = TRUE),3)
+f<-f[ , order(colnames(f))]
+f<-f[ , c(1,3,5,7,9,2,4,6,8,10)]
+head(f)
+
+res2<-res2[,c("baseMean","log2FoldChange","padj","wiki","geneloc","biotype")]
+colnames(res)<-c("Mean Counts","log2FoldChange","Padj","Symbol","Genomic Location","Biotype")
+temp<-merge(res2,f,by=0)
+View(temp)
+write.csv(temp,paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"),quote=F)
+
+options(httr_oob_default=TRUE)
+#gs_auth(new_user = TRUE)
+temp_gs1<-googlesheets::gs_upload(paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"))
+googlesheets::gs_browse(temp_gs1)
+
+
+```
+
+#gg_plotCounts
+```{r}
+gg_plotCounts<-function(x="ENSGALG00000003299",d=dds) {
+  if (substr(x,1,7)=="ENSGALG") {
+    title<-birdnames[grep(x,birdnames$'Ensembl id'),"wiki"]
+  } else {
+    title<-x
+    x<-birdnames[grep(paste0("^",title,"$"),birdnames$'gene symbol'),"Ensembl id"]
+  }
+
+  plotCounts(d,x,intgroup=c("group"),returnData=T) %>%
+    ggplot(aes(x=group, y=count)) +
+    geom_point(position=position_jitter(w=0.1,h=0)) + ggtitle(paste0(x,":  ",title)) +
+    stat_summary(fun.y = mean, fun.ymin = mean, fun.ymax = mean, 
+                 geom = "crossbar", width = 0.35,color="blue",size=0.2) +
+    expand_limits(x=0, y = 0) +
+    theme_bw()
+}
+
+gg_plotCounts("ENSGALG00000003299",dds)
+gg_plotCounts("ACTB",dds)
+gg_plotCounts("SOX9",dds)
+gg_plotCounts("SOX10",dds)
+gg_plotCounts("FOXD3",dds)
+gg_plotCounts("ENSGALG00000040532",dds)
+gg_plotCounts("MSX1",dds)
+gg_plotCounts("ENSGALG0000001524",dds)
+gg_plotCounts("ENSGALG00000030902",dds2)
+res["ENSGALG00000030902",]
+
+#Sox10, Snail2, FoxD3, Sox9, and Msx1
+
+gg_plotCounts("ENSGALG00000040532",dds)
+
+gg_plotCounts("ENSGALG00000028318",dds)
+```
+
+
+
+http://hgdownload.soe.ucsc.edu/goldenPath/galGal5/database/
+
+http://hgdownload.soe.ucsc.edu/goldenPath/galGal5/database/ensemblToGeneName.txt.gz
+
+https://www.ncbi.nlm.nih.gov/genome/annotation_euk/Gallus_gallus/103/
+
+
+## Nomenclature
+```{r}
+#This gene
+  
+  res[c("ENSGALG00000039808","ENSGALG00000029398"),]
+
+#is also this gene
+
+birdnames[birdnames$`CGNC id`==64241,]
+
+getBM(attributes = c("ensembl_gene_id","hgnc_symbol","entrezgene","wikigene_name","gene_biotype"), 
+                  filters = "ensembl_gene_id", 
+                  values = c("ENSGALG00000010160","ENSGALG00000016245","ENSGALG00000032795","ENSGALG00000039808","ENSGALG00000029398"), mart = ensembl_86)
+
+#what happened to bcor
+
+birdnames[birdnames$`CGNC id`==12146,]
+#where can I find the GFF file that IGV uses on galGal5?
+
+head(ucsc<-read.table("../ensemblToGeneName.txt",stringsAsFactors = F,sep = "\t"))
+ucsc$tx_id<-substr(ucsc$V1,1,18)
+ucsc[grep("BCOR",ucsc$V2),]
+
+summary(idx<-match(ucsc$tx_id,tra86$tx_name))
+ucsc$ensembl_gene<-unlist(tra86[idx]$gene_id)
+#summary(sapply(tra86$gene_id,length))
+head(ucsc)
+
+summary(idx<-match(rownames(res),ucsc$ensembl_gene))
+res$ucsc<-ucsc[idx,"V2"]
+head(res)
+
+f<-round(fpkm(dds,robust = TRUE),3)
+f<-f[ , order(colnames(f))]
+f<-f[ , c(1,3,5,7,9,2,4,6,8,10)]
+head(f)
+
+#clean up results file
+res2<-res[!is.na(res$padj),]
+res2<-res2[res2$padj < 0.05,]
+table(res2$biotype)
+#res2<-res2[res2$biotype=="lincRNA",]
+res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"hgnc"]
+res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"bird_symbol"]
+res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"symbol"]
+res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"symbol2"]
+sum(res2[,"wiki"]=="")
+#View(res2)
+
+
+
+res2<-res2[,c("baseMean","log2FoldChange","padj","wiki","geneloc")]
+colnames(res)<-c("Mean Counts","log2FoldChange","Padj","Symbol","Genomic Location")
+temp<-merge(res,f,by=0)
+View(temp)
+write.csv(temp,paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"),quote=F)
+
+options(httr_oob_default=TRUE)
+#gs_auth(new_user = TRUE)
+temp_gs1<-googlesheets::gs_upload(paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"))
+googlesheets::gs_browse(temp_gs1)
+
+```
+
+## Use NCBI RefSeq instead of BiomaRt
+ftp://ftp.ncbi.nih.gov/genomes/Gallus_gallus/GFF/ref_Gallus_gallus-5.0_top_level.gff3.gz
+
+# E-utils has the information I want
+https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=gene&id=418574
+https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=gene&id=100858869
+
+
+```{r}
+txdb103<-makeTxDbFromGFF("../ref_Gallus_gallus-5.0_top_level.gff3")
+ens103<-exonsBy(txdb103,by=c("gene"))
+gen103<-genes(txdb103)
+tra103<-transcripts(txdb103,columns=c("gene_id","tx_name"))
+
+refseq103<-rtracklayer::import("../ref_Gallus_gallus-5.0_top_level.gff3",format="GFF3")
+head(refseq103)
+
+gen86["ENSGALG00000016245"]
+refseq103[grep("BCOR",refseq103$Name)]
+
+devtools::install_github("ropensci/rentrez")
+library("rentrez")
+temp<-xmlInternalTreeParse("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=gene&id=418574&retmode=xml")
+temp<-xml2::url_parse("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=gene&id=418574&retmode=xml")
+head(temp)
+
+cleanFun <- function(htmlString) { return(gsub("<.*?>", "", htmlString)) }
+
+id2ensembl<-function(id) {
+temp <- entrez_fetch(db="gene", id=id, rettype="xml",parsed=TRUE)
+temp2<-XML::getNodeSet(temp,c("//Gene-ref_locus","//Gene-ref_db//Object-id_str"))
+mygene<-cleanFun(XML::xpathSApply(temp, "//Gene-ref_locus", XML::saveXML))
+myensemblid<-cleanFun(XML::xpathSApply(temp, "//Gene-ref_db//Object-id_str", XML::saveXML))
+return(paste(id,mygene,myensemblid))
+}
+
+id2ensembl(418574)
+id2ensembl(378914)
+
+df<-data.frame(x=c(418574,378914))
+as.data.frame(sapply(x,id2ensembl))
+
+
+a<-unlist(mcols(refseq103)$Dbxref)
+a<-a[grepl("GeneID:",a)]
+a<-as.character(unique(gsub("GeneID:","",a)))
+df<-data.frame(entrez=a,stringsAsFactors = F)
+b<-df[1:100,,drop=F]
+system.time(df$gene<-sapply(df$entrez,id2ensembl))
+save(df,file="df.rdata")
+head(df)
+df$id<-sapply(strsplit(as.character(df$gene)," "), function(x) x[1])
+df$symbol<-sapply(strsplit(as.character(df$gene)," "), function(x) x[2])
+df$ense<-sapply(strsplit(as.character(df$gene)," "), function(x) x[3])
+df$ense2<-sapply(strsplit(as.character(df$gene)," "), function(x) x[4])
+
+sum(grepl("ENSGALG",df$gene))
+sum(grepl("ENSGALG",df$ense))
+df[grepl("ENSGALG",df$gene) & !grepl("ENSGALG",df$ense),]
+
+df[grepl("ENSGALG",df$gene) & !grepl("ENSGALG",df$ense),"ense"]<-"ENSGALG00000009903"
+df2<-df[,c("ense","entrez","symbol")]
+
+```
+
+ this is taking a long time....
+```{r}
+head(res$entrez)
+sum(!is.na(res$entrez) & is.na(res$hgnc))
+
+summary(idx<-match(rownames(res),df2$ense))
+res$symbol<-df2[idx,"symbol"]
+
+summary(idx<-match(res$entrez,df2$entrez))
+res$symbol2<-df2[idx,"symbol"]
+
+```
+
+```{r}
+res2<-res[!is.na(res$padj),]
+res2<-res2[res2$padj < 0.05,]
+table(res2$biotype)
+#res2<-res2[res2$biotype=="lincRNA",]
+res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"hgnc"]
+res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"bird_symbol"]
+res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"symbol"]
+res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"symbol2"]
+sum(res2[,"wiki"]=="")
+#View(res2)
+
+res2<-res2[,c("baseMean","log2FoldChange","padj","wiki","geneloc")]
+colnames(res2)<-c("Mean Counts","log2FoldChange","Padj","Symbol","Genomic Location")
+write.csv(res2,paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"),quote=F)
+
+options(httr_oob_default=TRUE)
+#gs_auth(new_user = TRUE)
+temp_gs1<-googlesheets::gs_upload(paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"))
+googlesheets::gs_browse(temp_gs1)
+```
+
