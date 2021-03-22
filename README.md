@@ -2,8 +2,11 @@
 
 # Highlights
 NSD3-dependent gene expression in chick neural folds is profiled by RNA-seq.
+
 Downregulated genes correlate with premigratory neural crest gene expression.
+
 Upregulated genes implicate ribosome biogenesis.
+
 Novel candidate regulatory factors including Astn1, Disp3, and Tpm1 are identified.
 
 # Abstract
