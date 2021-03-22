@@ -103,7 +103,6 @@ if (bar) {
 }
 }
 
-plot_fpkm("BCOR",bar=T)
 plot_fpkm("CYP26A1")
 
 ```
@@ -349,82 +348,6 @@ table(sign(res_g6_subset$log2FoldChange))
 
 ```
 
-#ChIP 
-```{r}
-#high_expressed_genes<-rownames(fDF[fDF$CON_Mean_FPKM > 75 & fDF$CON_Mean_FPKM < 100,])
-
-length(up<-res_g6_subset[res_g6_subset$log2FoldChange > 0,"Ensembl ID"])
-length(dn<-res_g6_subset[res_g6_subset$log2FoldChange < 0,"Ensembl ID"])
-
-genes_up<-genes[up]
-genes_up$direction<-"up"
-genes_dn<-genes[dn]
-genes_dn$direction<-"down"
-
-my_genes<-c(genes_up,genes_dn)
-my_genes$direction<-factor(my_genes$direction,levels=c("up","down"))
-table(my_genes$direction)
-#tss = promoters(genes[high_expressed_genes], upstream = 0, downstream = 1)
-#tss[1:5]
-#tss<-keepSeqlevels(tss,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
-
-#my_genes<-genes[high_expressed_genes]
-my_genes<-keepSeqlevels(my_genes,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
-
-g_ci<-rtracklayer::import("../galGal6/1-ConMO_input_GTTTCG_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
-g_c1<-rtracklayer::import("../galGal6/1-ConMO_H3K36me2_ChIP_GTCCGC_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
-g_c2<-rtracklayer::import("../galGal6/2-ConMO_H3K36me2_ChIP_GTGAAA_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
-g_c3<-rtracklayer::import("../galGal6/3-ConMO_H3K36me2_ChIP_GTGGCC_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
-g_ni<-rtracklayer::import("../galGal6/1-NSD3MO_input_CCGTCC_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
-g_n1<-rtracklayer::import("../galGal6/1-NSD3MO_H3K36me2_ChIP_AGTCAA_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
-g_n2<-rtracklayer::import("../galGal6/2-NSD3MO_H3K36me2_ChIP_AGTTCC_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
-g_n3<-rtracklayer::import("../galGal6/3-NSD3MO_H3K36me2_ChIP_ATGTCA_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
-g_ci<-keepSeqlevels(g_ci,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
-g_c1<-keepSeqlevels(g_c1,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
-g_c2<-keepSeqlevels(g_c2,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
-g_c3<-keepSeqlevels(g_c3,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
-g_ni<-keepSeqlevels(g_ni,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
-g_n1<-keepSeqlevels(g_n1,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
-g_n2<-keepSeqlevels(g_n2,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
-g_n3<-keepSeqlevels(g_n3,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
-
-
-mat_ci = normalizeToMatrix(g_ci, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
-mat_c1 = normalizeToMatrix(g_c1, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
-mat_c2 = normalizeToMatrix(g_c2, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
-mat_c3 = normalizeToMatrix(g_c3, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
-mat_ni = normalizeToMatrix(g_ni, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
-mat_n1 = normalizeToMatrix(g_n1, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
-mat_n2 = normalizeToMatrix(g_n2, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
-mat_n3 = normalizeToMatrix(g_n3, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
-
-
-col_fun_ci= colorRamp2(quantile(mat_ci, c(0, 0.99)), c("white", "blue"))
-col_fun_c1= colorRamp2(quantile(mat_c1, c(0, 0.99)), c("white", "blue"))
-col_fun_c2= colorRamp2(quantile(mat_c2, c(0, 0.99)), c("white", "blue"))
-col_fun_c3= colorRamp2(quantile(mat_c3, c(0, 0.99)), c("white", "blue"))
-col_fun_ni= colorRamp2(quantile(mat_ni, c(0, 0.99)), c("white", "blue"))
-col_fun_n1= colorRamp2(quantile(mat_n1, c(0, 0.99)), c("white", "blue"))
-col_fun_n2= colorRamp2(quantile(mat_n2, c(0, 0.99)), c("white", "blue"))
-col_fun_n3= colorRamp2(quantile(mat_n3, c(0, 0.99)), c("white", "blue"))
-
-EnrichedHeatmap(mat_ci, name = "1-Con Input", column_title = "1-Con Input",col=col_fun_ci,split=my_genes$direction, show_heatmap_legend = FALSE,
-                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
-EnrichedHeatmap(mat_c1, name = "1-Con ChIP", column_title = "1-Con ChIP",col=col_fun_c1,split=my_genes$direction, show_heatmap_legend = FALSE,
-                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
-EnrichedHeatmap(mat_c2, name = "2-Con ChIP", column_title = "2-Con ChIP",col=col_fun_c2,split=my_genes$direction, show_heatmap_legend = FALSE,
-                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
-EnrichedHeatmap(mat_c3, name = "3-Con ChIP", column_title = "3-Con ChIP",col=col_fun_c3,split=my_genes$direction, show_heatmap_legend = FALSE,
-                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
-EnrichedHeatmap(mat_ni, name = "1-NSD3 Input", column_title = "1-NSD3 Input",col=col_fun_ni,split=my_genes$direction, show_heatmap_legend = FALSE,
-                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
-EnrichedHeatmap(mat_n1, name = "1-NSD3 ChIP", column_title = "1-NSD3 ChIP",col=col_fun_n1,split=my_genes$direction, show_heatmap_legend = FALSE,
-                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
-EnrichedHeatmap(mat_n2, name = "2-NSD3 ChIP", column_title = "2-NSD3 ChIP",col=col_fun_n2,split=my_genes$direction, show_heatmap_legend = FALSE,
-                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
-EnrichedHeatmap(mat_n3, name = "3-NSD3 ChIP", column_title = "3-NSD3 ChIP",col=col_fun_n3,split=my_genes$direction, show_heatmap_legend = FALSE, 
-                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) 
-```
 
 ```{r}
 options(ucscChromosomeNames=FALSE)
@@ -597,6 +520,7 @@ length(williams_migration_dn<-subset(williams_migration_res_g6_subset,log2FoldCh
 write.csv(williams_migration_res_g6_subset[,c("Ensembl ID","name","external","uni","baseMean","log2FoldChange","padj","CitrineNeg_510ss_Mean_FPKM","CitrinePos_56ss_Mean_FPKM","CitrinePos_810ss_Mean_FPKM")],paste0("williams_DEGs_810ss_vs_56ss_CitrinePos_Galgal6_",ts,".csv"),quote=F,row.names=F)
 View(as.data.frame(williams_migration_res_g6_subset))
 ```
+
 #Specification
 ```{r}
 colData(williams_dds_specification_g6<-williams_dds_g6[,!stringr::str_detect(colData(williams_dds_g6)$time,"810ss")])
@@ -700,20 +624,4 @@ write.csv(res_g6_subset_export,paste0("nsd3_rnaseq_differentially_expressed_gene
 ```
 
 
-#IGV
-```{r}
-https://s3.msi.umn.edu/gammilll/g6/1-CON_S24_q55_scaled.bigWig
-https://s3.msi.umn.edu/gammilll/g6/2-CON_S25_q55_scaled.bigWig
-https://s3.msi.umn.edu/gammilll/g6/3-CON_S26_q55_scaled.bigWig
-https://s3.msi.umn.edu/gammilll/g6/4-CON_S27_q55_scaled.bigWig
-https://s3.msi.umn.edu/gammilll/g6/5-CON_S28_q55_scaled.bigWig
-
-https://s3.msi.umn.edu/gammilll/g6/1-NSD3MO_S19_q55_scaled.bigWig
-https://s3.msi.umn.edu/gammilll/g6/2-NSD3MO_S20_q55_scaled.bigWig
-https://s3.msi.umn.edu/gammilll/g6/3-NSD3MO_S21_q55_scaled.bigWig
-https://s3.msi.umn.edu/gammilll/g6/4-NSD3MO_S22_q55_scaled.bigWig
-https://s3.msi.umn.edu/gammilll/g6/5-NSD3MO_S23_q55_scaled.bigWig
-
-
-```
 
