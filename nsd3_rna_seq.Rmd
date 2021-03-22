@@ -1,348 +1,719 @@
 ---
-title: "Untitled"
+title: "Gallus gallus NSD3 Morpholino Differential Expression Analysis"
 author: "Micah Gearhart"
-date: "11/21/2016"
+date: "1/13/2021"
 output: html_document
+creative_commons: CC BY
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+
 ```{r libraries}
+library("GenomicAlignments")
+library("Rsamtools")
+library("rtracklayer")
+library("BiocParallel")
+library("magrittr")
+library("RColorBrewer")
+
 library("biomaRt")
 library("GenomicFeatures")
 library("DESeq2")
 library("dplyr")
 library("ggplot2")
-library("rentrez")
-library("googlesheets")
+library("Gviz")
+library("EnrichedHeatmap")
+library("circlize")
 
-swl<- function(x) {as.numeric(sapply(strsplit(as.character(x),":|-"),function(x) x[2]))}
-wls<- function(x) { paste0(seqnames(x),":",start(x),"-",end(x))}
 
 ts<-format(Sys.time(), "%a_%b_%d_%Y_%H%M")
 cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
 ```
 
-
-```{r}
-listMarts()
-ensembl_86<-useMart(biomart="ENSEMBL_MART_ENSEMBL",host = "useast.ensembl.org", dataset="ggallus_gene_ensembl")
-txdb86<-makeTxDbFromBiomart(biomart="ENSEMBL_MART_ENSEMBL",host="useast.ensembl.org", dataset="ggallus_gene_ensembl")
-#saveDb(txdb86,"~/txdb86_ggallus.sqlite")
-#loadDb("~/txdb86_ggallus.sqlite")
-ens86<-exonsBy(txdb86,by="gene")
-gen86<-genes(txdb86)
-tra86<-transcripts(txdb86,columns=c("gene_id","tx_name"))
-
-attributes<-listAttributes(mart=ensembl_86)
-symbols <-  getBM(attributes = c("ensembl_gene_id","hgnc_symbol","entrezgene","gene_biotype","wikigene_name"), 
-                  filters = "ensembl_gene_id", 
-                  values = names(ens86), mart = ensembl_86)
-
-symbols[symbols$wikigene_name %in% c("SOX10","SNAI2","WHSC1L1","ACTB","SOX9","ACTB","DMRT1","BCOR"),]
-symbols[symbols$entrezgene %in% c("418574","432368","426778","396526","396526","769693","395573"),]
-
-#BCOR is a listed transcript but is un-named.
-symbols[symbols$ensembl_gene_id %in% c("ENSGALG00000016245"),]
-
-save(ens86,gen86,file="ens86_chick.rdata")
-save(symbols,file="symbols86_chick.rdata")
-# load CGNC data from 2012  from http://birdgenenames.org
-birdnames<-as.data.frame(readr::read_tsv("cgnc.txt"))
-birdnames<-birdnames[!is.na(birdnames$`CGNC id`),]
-#NSD3 is also known as WHSC1L1 
-(temp<-birdnames[birdnames$`gene symbol` %in% c("SOX10","SNAI2","WHSC1L1","ACTB","SOX9","ACTB","DMRT1","BCOR"),])
-
-
-getBM(attributes = c("ensembl_gene_id","hgnc_symbol","entrezgene","wikigene_name","gene_biotype"), 
-                  filters = "ensembl_gene_id", 
-                  values = c("ENSGALG00000010160","ENSGALG00000016245","ENSGALG00000032795"), mart = ensembl_86)
-```
-
-```{r}
-load("gammilll_Project_003_genehits_ens86_Mon_Nov_21_2016_1355.rdata")
-as.data.frame(apply(assays(genehits)$counts,2,sum))
-
-filenames<-colnames(genehits)
-dds<-DESeqDataSet(genehits,design=~1)
-
-colData(dds)$filename<-filenames
-colnames(dds)<-gsub(".Aligned.out.bam","",colnames(dds))
-colData(dds)$group<-filenames %>% stringr::str_extract("CON|NSD3MO") %>% as.factor
-
-plotPCA( normTransform( dds ) ,intgroup = c("group"),ntop=50)+
-  ggtitle("NSD3 Morpholino vs Control") + theme_bw()
-
-# "Mon Jan 30 22:17:33 2017"  - Found out two samples didn't pass QC
-#dds2<-dds[,c(1:5,8:10)]
-#plotPCA( normTransform( dds2 ) ,intgroup = c("group"),ntop=50)+
-#  ggtitle("NSD3 Morpholino vs Control") + theme_bw()
-
-design(dds)<-(~group)
-dds<-DESeq(dds)
-resultsNames(dds)
-summary(res<-results(dds, contrast=c("group","NSD3MO","CON"),alpha=0.05,lfcThreshold = 0))
-
-
-summary(idx<-match(rownames(res),symbols$ensembl_gene_id))
-res$biotype<-symbols[idx,"gene_biotype"]
-res$wiki<-symbols[idx,"wikigene_name"]
-res$hgnc<-symbols[idx,"hgnc_symbol"]
-res$entrez<-symbols[idx,"entrezgene"]
-
-idx2<-match(rownames(res),birdnames$`Ensembl id`)
-res$bird_symbol<-as.character(birdnames[idx2,"gene symbol"])
-res$bird_entrez<-as.character(birdnames[idx2,"Entrez Gene id"])
-#res$bird_description<-as.character(birdnames[idx2,"gene name"])
-
-genelocs<-wls(gen86)
-names(genelocs)<-names(gen86)
-res$geneloc<-genelocs[rownames(res)]
-sum(is.na(res$padj))
-res2<-subset(res,abs(log2FoldChange) > 0.3 & padj < 0.05 )
-sum(is.na(res2$padj))
-
-
-
-#clean up results file
-
-table(res2$biotype)
-#res2<-res2[res2$biotype=="lincRNA",]
-res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"hgnc"]
-res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"bird_symbol"]
-#res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"symbol"]
-#res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"symbol2"]
-sum(res2[,"wiki"]=="")
-#View(res2)
-
-f<-round(fpkm(dds,robust = TRUE),3)
-f<-f[ , order(colnames(f))]
-f<-f[ , c(1,3,5,7,9,2,4,6,8,10)]
-head(f)
-
-res2<-res2[,c("baseMean","log2FoldChange","padj","wiki","geneloc","biotype")]
-colnames(res)<-c("Mean Counts","log2FoldChange","Padj","Symbol","Genomic Location","Biotype")
-temp<-merge(res2,f,by=0)
-View(temp)
-write.csv(temp,paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"),quote=F)
-
-options(httr_oob_default=TRUE)
-#gs_auth(new_user = TRUE)
-temp_gs1<-googlesheets::gs_upload(paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"))
-googlesheets::gs_browse(temp_gs1)
-
-
-```
-
 #gg_plotCounts
-```{r}
-gg_plotCounts<-function(x="ENSGALG00000003299",d=dds) {
+```{r define_functions}
+gg_plotCounts<-function(x="ENSGALG00000003299",d=dds_g6) {
   if (substr(x,1,7)=="ENSGALG") {
-    title<-birdnames[grep(x,birdnames$'Ensembl id'),"wiki"]
+    title<-symbols[grep(x,symbols$gene_id),"gene_name"]
   } else {
     title<-x
-    x<-birdnames[grep(paste0("^",title,"$"),birdnames$'gene symbol'),"Ensembl id"]
+    x<-unique(symbols[grep(paste0("^",title,"$"),symbols$gene_name),"gene_id"])
   }
 
   plotCounts(d,x,intgroup=c("group"),returnData=T) %>%
     ggplot(aes(x=group, y=count)) +
     geom_point(position=position_jitter(w=0.1,h=0)) + ggtitle(paste0(x,":  ",title)) +
-    stat_summary(fun.y = mean, fun.ymin = mean, fun.ymax = mean, 
+    stat_summary(fun.y = mean, fun.min = mean, fun.max = mean, 
                  geom = "crossbar", width = 0.35,color="blue",size=0.2) +
     expand_limits(x=0, y = 0) +
     theme_bw()
 }
 
-gg_plotCounts("ENSGALG00000003299",dds)
-gg_plotCounts("ACTB",dds)
-gg_plotCounts("SOX9",dds)
-gg_plotCounts("SOX10",dds)
-gg_plotCounts("FOXD3",dds)
-gg_plotCounts("ENSGALG00000040532",dds)
-gg_plotCounts("MSX1",dds)
-gg_plotCounts("ENSGALG0000001524",dds)
-gg_plotCounts("ENSGALG00000030902",dds2)
-res["ENSGALG00000030902",]
-
-#Sox10, Snail2, FoxD3, Sox9, and Msx1
-
-gg_plotCounts("ENSGALG00000040532",dds)
-
-gg_plotCounts("ENSGALG00000028318",dds)
-```
-
-
-
-http://hgdownload.soe.ucsc.edu/goldenPath/galGal5/database/
-
-http://hgdownload.soe.ucsc.edu/goldenPath/galGal5/database/ensemblToGeneName.txt.gz
-
-https://www.ncbi.nlm.nih.gov/genome/annotation_euk/Gallus_gallus/103/
-
-
-## Nomenclature
-```{r}
-#This gene
-  
-  res[c("ENSGALG00000039808","ENSGALG00000029398"),]
-
-#is also this gene
-
-birdnames[birdnames$`CGNC id`==64241,]
-
-getBM(attributes = c("ensembl_gene_id","hgnc_symbol","entrezgene","wikigene_name","gene_biotype"), 
-                  filters = "ensembl_gene_id", 
-                  values = c("ENSGALG00000010160","ENSGALG00000016245","ENSGALG00000032795","ENSGALG00000039808","ENSGALG00000029398"), mart = ensembl_86)
-
-#what happened to bcor
-
-birdnames[birdnames$`CGNC id`==12146,]
-#where can I find the GFF file that IGV uses on galGal5?
-
-head(ucsc<-read.table("../ensemblToGeneName.txt",stringsAsFactors = F,sep = "\t"))
-ucsc$tx_id<-substr(ucsc$V1,1,18)
-ucsc[grep("BCOR",ucsc$V2),]
-
-summary(idx<-match(ucsc$tx_id,tra86$tx_name))
-ucsc$ensembl_gene<-unlist(tra86[idx]$gene_id)
-#summary(sapply(tra86$gene_id,length))
-head(ucsc)
-
-summary(idx<-match(rownames(res),ucsc$ensembl_gene))
-res$ucsc<-ucsc[idx,"V2"]
-head(res)
-
-f<-round(fpkm(dds,robust = TRUE),3)
-f<-f[ , order(colnames(f))]
-f<-f[ , c(1,3,5,7,9,2,4,6,8,10)]
-head(f)
-
-#clean up results file
-res2<-res[!is.na(res$padj),]
-res2<-res2[res2$padj < 0.05,]
-table(res2$biotype)
-#res2<-res2[res2$biotype=="lincRNA",]
-res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"hgnc"]
-res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"bird_symbol"]
-res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"symbol"]
-res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"symbol2"]
-sum(res2[,"wiki"]=="")
-#View(res2)
-
-
-
-res2<-res2[,c("baseMean","log2FoldChange","padj","wiki","geneloc")]
-colnames(res)<-c("Mean Counts","log2FoldChange","Padj","Symbol","Genomic Location")
-temp<-merge(res,f,by=0)
-View(temp)
-write.csv(temp,paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"),quote=F)
-
-options(httr_oob_default=TRUE)
-#gs_auth(new_user = TRUE)
-temp_gs1<-googlesheets::gs_upload(paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"))
-googlesheets::gs_browse(temp_gs1)
+swl<- function(x) {as.numeric(sapply(strsplit(as.character(x),":|-"),function(x) x[2]))}
+wls<- function(x) { paste0(seqnames(x),":",start(x),"-",end(x))}
 
 ```
 
-## Use NCBI RefSeq instead of BiomaRt
-ftp://ftp.ncbi.nih.gov/genomes/Gallus_gallus/GFF/ref_Gallus_gallus-5.0_top_level.gff3.gz
-
-# E-utils has the information I want
-https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=gene&id=418574
-https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=gene&id=100858869
-
-
+# Visualize As FPKM
 ```{r}
-txdb103<-makeTxDbFromGFF("../ref_Gallus_gallus-5.0_top_level.gff3")
-ens103<-exonsBy(txdb103,by=c("gene"))
-gen103<-genes(txdb103)
-tra103<-transcripts(txdb103,columns=c("gene_id","tx_name"))
+plot_fpkm<-function(x="ENSGALG00000003299",bar=F,d=dds_g6) {
+  if (substr(x,1,7)=="ENSGALG") {
+    title<-symbols[grep(x,symbols$gene_id),"gene_name"]
+  } else {
+    x<-toupper(x)
+    symbol<-x
+    x<-unique(symbols[grep(paste0("^",x,"$"),symbols$gene_name),"gene_id"])
+    title<-paste0(symbol,": ",x)
+  }
 
-refseq103<-rtracklayer::import("../ref_Gallus_gallus-5.0_top_level.gff3",format="GFF3")
-head(refseq103)
-
-gen86["ENSGALG00000016245"]
-refseq103[grep("BCOR",refseq103$Name)]
-
-devtools::install_github("ropensci/rentrez")
-library("rentrez")
-temp<-xmlInternalTreeParse("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=gene&id=418574&retmode=xml")
-temp<-xml2::url_parse("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=gene&id=418574&retmode=xml")
-head(temp)
-
-cleanFun <- function(htmlString) { return(gsub("<.*?>", "", htmlString)) }
-
-id2ensembl<-function(id) {
-temp <- entrez_fetch(db="gene", id=id, rettype="xml",parsed=TRUE)
-temp2<-XML::getNodeSet(temp,c("//Gene-ref_locus","//Gene-ref_db//Object-id_str"))
-mygene<-cleanFun(XML::xpathSApply(temp, "//Gene-ref_locus", XML::saveXML))
-myensemblid<-cleanFun(XML::xpathSApply(temp, "//Gene-ref_db//Object-id_str", XML::saveXML))
-return(paste(id,mygene,myensemblid))
+if (!bar) {
+  return(
+    data.frame(f=fpkm(d,robust=T)[x,],group=colData(d)$group) %>%
+    dplyr::mutate(log2fpkm=log2(f+0.5)) %>%
+    ggplot(aes(x=group,y=log2fpkm,color=group)) + geom_point(size=2) +
+    stat_summary(fun = mean, fun.min = mean, fun.max = mean,
+                 geom = "crossbar", width = 0.35,size=0.4) +
+    theme_bw() +  ggtitle(paste0(title," : ",x)) +
+    xlab("") + ylab("Log2 Normalized FPKM") +
+    scale_color_manual(values=cbPalette[c(6,7)]) +
+    expand_limits(x=0, y = 0) +
+    theme(legend.position="none") + theme(axis.text.x = element_text(angle = 90, hjust = 1)))
 }
 
-id2ensembl(418574)
-id2ensembl(378914)
+if (bar) {
+  return(
+    data.frame(f=fpkm(d,robust=T)[x,],group=colData(d)$group) %>%
+    group_by(group) %>%
+      mutate(log2fpkm=log2(f+0.5)) %>%
+      summarize(mean=mean(log2fpkm),se=sd(log2fpkm)/sqrt(n())) %>%
+  #  mutate(gene=factor(gene,levels=c("granulosa","control","sox9","dmrt1","Sertoli"))) %>%
+    ggplot(aes(x=group, y=mean,fill=group)) +
 
-df<-data.frame(x=c(418574,378914))
-as.data.frame(sapply(x,id2ensembl))
+    geom_bar(stat = "identity",position = "dodge",color="black",width=0.8) + ggtitle(title) +
+    geom_errorbar(aes(ymin=mean,ymax = mean+se), position = "dodge", width = 0.8) +
+    xlab("") + ylab("Log2 Normalized FPKM") + theme_bw() +
+    scale_fill_manual(values=cbPalette[c(6,7)]) +
+    theme(legend.position="none") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    expand_limits(x=0, y = 0))
+}
+}
 
-
-a<-unlist(mcols(refseq103)$Dbxref)
-a<-a[grepl("GeneID:",a)]
-a<-as.character(unique(gsub("GeneID:","",a)))
-df<-data.frame(entrez=a,stringsAsFactors = F)
-b<-df[1:100,,drop=F]
-system.time(df$gene<-sapply(df$entrez,id2ensembl))
-save(df,file="df.rdata")
-head(df)
-df$id<-sapply(strsplit(as.character(df$gene)," "), function(x) x[1])
-df$symbol<-sapply(strsplit(as.character(df$gene)," "), function(x) x[2])
-df$ense<-sapply(strsplit(as.character(df$gene)," "), function(x) x[3])
-df$ense2<-sapply(strsplit(as.character(df$gene)," "), function(x) x[4])
-
-sum(grepl("ENSGALG",df$gene))
-sum(grepl("ENSGALG",df$ense))
-df[grepl("ENSGALG",df$gene) & !grepl("ENSGALG",df$ense),]
-
-df[grepl("ENSGALG",df$gene) & !grepl("ENSGALG",df$ense),"ense"]<-"ENSGALG00000009903"
-df2<-df[,c("ense","entrez","symbol")]
+plot_fpkm("BCOR",bar=T)
+plot_fpkm("CYP26A1")
 
 ```
 
- this is taking a long time....
+# Get human orthologs and Uniprot Gene Names
 ```{r}
-head(res$entrez)
-sum(!is.na(res$entrez) & is.na(res$hgnc))
+#Step 1 - Define the database you would like to use:
+ensembl100<-useMart(biomart="ensembl",host = "useast.ensembl.org", dataset="ggallus_gene_ensembl")
 
-summary(idx<-match(rownames(res),df2$ense))
-res$symbol<-df2[idx,"symbol"]
+# Step 2 - Get Ensembl Identifiers for genes in your list
+human_genes_with_ensembl_gene_id <-  getBM(attributes = c("ensembl_gene_id","hsapiens_homolog_ensembl_gene","hsapiens_homolog_associated_gene_name"), filters = "ensembl_gene_id", values = rownames(res_g6), mart = ensembl100)
 
-summary(idx<-match(res$entrez,df2$entrez))
-res$symbol2<-df2[idx,"symbol"]
+# check if gene names are any different than the ones we previously used
+names_with_ensembl_gene_id <-  getBM(attributes = c("ensembl_gene_id","external_gene_name","hgnc_symbol","uniprot_gn_symbol"), filters = "ensembl_gene_id", values = rownames(res_g6), mart = ensembl100)
 
+save(human_genes_with_ensembl_gene_id,names_with_ensembl_gene_id,file="ensembl100_data_from_bioMart.rdata")
 ```
 
 ```{r}
-res2<-res[!is.na(res$padj),]
-res2<-res2[res2$padj < 0.05,]
-table(res2$biotype)
-#res2<-res2[res2$biotype=="lincRNA",]
-res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"hgnc"]!=""),"hgnc"]
-res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"bird_symbol"]!=""),"bird_symbol"]
-res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol"]!=""),"symbol"]
-res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"wiki"]<-res2[which(res2[,"wiki"]=="" & res2[,"symbol2"]!=""),"symbol2"]
-sum(res2[,"wiki"]=="")
-#View(res2)
+g100<-import("Gallus_gallus.GRCg6a.100.gtf",format="gtf")
+seqlevelsStyle(g100)<-"NCBI"
+symbols<-as.data.frame(mcols(g100))
+symbols<-symbols[symbols$type=="transcript",c("gene_id","gene_name","gene_biotype","transcript_id")]
+symbols$chr<-as.character(seqnames(g100[match(symbols$gene_id,g100$gene_id)]))
+#symbols$gene_id<-substr(symbols$gene_id,1,18)
 
-res2<-res2[,c("baseMean","log2FoldChange","padj","wiki","geneloc")]
-colnames(res2)<-c("Mean Counts","log2FoldChange","Padj","Symbol","Genomic Location")
-write.csv(res2,paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"),quote=F)
 
-options(httr_oob_default=TRUE)
-#gs_auth(new_user = TRUE)
-temp_gs1<-googlesheets::gs_upload(paste0("nsd3_rnaseq_differentially_expressed_genes_",ts,".csv"))
-googlesheets::gs_browse(temp_gs1)
+#FOXD3   ENSGALG00000042686 Chromosome 8: 28,132,665-28,133,855 
+#FOXD1   ENSGALG00000012644
+#NEUROG1 ENSGALG00000029692
+#SNAI2   ENSGALG00000030902
+
+symbols[grep("ENSGALG00000030902",symbols$gene_id),"gene_name"]<-"SNAI2"
+table(symbols$chr)
+
+txdb<-makeTxDbFromGFF("Gallus_gallus.GRCg6a.100.gtf",format="gtf")
+  seqlevelsStyle(txdb)<-"NCBI"
+#get symbols and biotypes from gff3 file that is not in txdb
+genes<-genes(txdb)
+#transcipts for Gviz
+transcripts<-transcripts(txdb,use.names=TRUE)
+transcripts$gene_id<-symbols[match(transcripts$tx_name,symbols$transcript_id),"gene_id"]
+save(symbols,genes,transcripts,file="symbols_transcripts_ens100.rdata")
+```
+
+#Load Data and build DDS
+```{r}
+load("ensembl100_data_from_bioMart.rdata")
+load("symbols_transcripts_ens100.rdata")
+#load("featureCounts_gammilll_P003_ens95_galGal6_q55_Wed_Mar_27_2019_0635.rdata")
+load("featureCounts_gammilll_P003_ens100_galGal6_q55_Fri_Jul_03_2020_1249.rdata")
+
+coldata<-as.data.frame(apply(rev_stranded_counts$counts,2,sum))
+colnames(coldata)<-"total_counts"
+dim(coldata)
+
+dds_g6<-DESeqDataSetFromMatrix(rev_stranded_counts$counts,colData = coldata,design = ~1)
+
+colData(dds_g6)$group<-colnames(dds_g6) %>% stringr::str_extract("CON|NSD3MO") %>% as.factor
+colData(dds_g6)$filename<-gsub("\\.repair","",colnames(dds_g6)) %>% gsub("galGal6\\.","",.)
+colnames(dds_g6)<-sapply(strsplit(colData(dds_g6)$filename,"\\."), function(x) x[2])
+
+
+rownames(colData(dds_g6)) <- colnames(dds_g6)
+#rownames(dds)<-substr(rownames(dds),1,18)
+mcols(dds_g6)$basepairs<-rev_stranded_counts$annotation$Length
+#mcols(dds)$mgi_symbol<-mgi[match(rownames(dds),mgi$ensembl_gene_id),]$mgi_symbol
+mcols(dds_g6)$symbol<-symbols[match(rownames(dds_g6),symbols$gene_id),]$gene_name
+
+dds_g6<-estimateSizeFactors(dds_g6)
+svglite::svglite(paste0("nsd3_mo_PCA_plot_",ts,".svg"),width=4,height=3)
+plotPCA( normTransform( dds_g6 ) ,intgroup = c("group"),ntop=500)+
+  ggtitle("NSD3 Morpholino vs Control") + theme_bw() + 
+  scale_color_manual(values=cbPalette[6:7],name="Morpholino")
+dev.off()
+```
+
+# Exploratory Data Analysis
+```{r}
+gg_plotCounts("ENSGALG00000003299")
+gg_plotCounts("ACTB")
+gg_plotCounts("SOX9")
+gg_plotCounts("SOX10")
+gg_plotCounts("ENSGALG00000042686")  #FOXD3
+gg_plotCounts("ENSGALG00000012644")  #FOXD1
+gg_plotCounts("ENSGALG00000029692")  #NEUROG1
+gg_plotCounts("ENSGALG00000040532") #ZIC1
+gg_plotCounts("ENSGALG00000043204") #PAX7
+gg_plotCounts("ENSGALG00000036756") #ERNI
+gg_plotCounts("MSX1")
+gg_plotCounts("ENSGALG00000030902") 
+
+#Sox10, Snail2, FoxD3, Sox9, and Msx1
+gg_plotCounts("ENSGALG00000028318")
+gg_plotCounts("CCNG1")
+
+#FOXDx
+names_with_ensembl_gene_id[grepl("FOXD",names_with_ensembl_gene_id$external_gene_name),]
+names_with_ensembl_gene_id[grepl("FOXD",names_with_ensembl_gene_id$uniprot_gn_symbol),]
+symbols[grepl("FOXD",symbols$gene_name),]
+
+names_with_ensembl_gene_id[grepl("SNAI",names_with_ensembl_gene_id$external_gene_name),]
+names_with_ensembl_gene_id[grepl("SNAI",names_with_ensembl_gene_id$uniprot_gn_symbol),]
+symbols[grepl("SNAI",symbols$gene_name),]
+
+
+```
+
+#Build Model
+```{r}
+colData(dds_g6)
+design(dds_g6)<-~group
+
+dds_g6<-DESeq(dds_g6)
+
+resultsNames(dds_g6)
+summary(res_g6<-results(dds_g6, contrast=c("group","NSD3MO","CON"),alpha=0.05,lfcThreshold = 0))
+
+summary(idx<-match(rownames(res_g6),symbols$gene_id))
+#res_g6$biotype<-symbols[idx,"gene_biotype"]
+res_g6$name<-symbols[idx,"gene_name"]
+
+summary(idx2<-match(rownames(res_g6),names_with_ensembl_gene_id$ensembl_gene_id))
+res_g6$external<-names_with_ensembl_gene_id[idx2,"external_gene_name"]
+#res_g6$hgnc<-names_with_ensembl_gene_id[idx2,"hgnc_symbol"]
+res_g6$uni<-names_with_ensembl_gene_id[idx2,"uniprot_gn_symbol"]
+
+
+#idx2<-match(rownames(res_g6),birdnames$`Ensembl id`)
+#res_g6$bird_symbol<-as.character(birdnames[idx2,"gene symbol"])
+#res_g6$bird_entrez<-as.character(birdnames[idx2,"Entrez Gene id"])
+#res$bird_description<-as.character(birdnames[idx2,"gene name"])
+
+nrow(res_g6_subset<-subset(res_g6,abs(log2FoldChange) > log2(1.2) & padj < 0.05))
+
+temp<-rownames_to_column(as.data.frame(res_g6),var="Ensembl ID")
+write.csv(temp[,c("Ensembl ID","name","external","baseMean","log2FoldChange","padj")],file=paste0("full_results_table_",ts,".csv"),row.names=F,quote=F)
+nrow(temp)
+res_g6[symbols[grep("CCNG1",symbols$gene_name),]$gene_id,]
+
+View(as.data.frame(res_g6_subset))
+```
+
+
+#volcano
+```{r}
+goi_yellow<-c("TFAP2B","SOX9","PAX7","CDON","TFAP2E","ZIC1","CDKN1A","ASTN1","TPM1","PCDH8")
+goi_gray<-c("DISP3","FLOT2","TGIF2","OLFM1","ZEB2")
+goi_up<-c("CDKN1A","CCNG1")
+
+goi_insitu<-c("ASTN1", "DISP3", "TPM1")
+goi_nc<-c("SOX9", "PAX7", "TFAP2B", "TFAP2E", "ZIC1")
+goi_ncns<-c("SOX10", "SNAI2", "FOXD3", "MSX1")
+
+(df<-as.data.frame(res_g6[res_g6$name %in% c(goi_insitu,goi_nc,goi_ncns),]))
+table(res_g6$deg<-factor(case_when(
+  res_g6$padj < 0.05 & res_g6$log2FoldChange > log2(1.2) ~ "Higher in NSD3 MO",
+  res_g6$padj < 0.05 & res_g6$log2FoldChange < -1*log2(1.2) ~ "Higher in mmMO",
+  res_g6$padj > 0.05 | abs(res_g6$log2FoldChange) <= log2(1.2) ~ "Unchanged",
+  TRUE ~ "huh?"
+),levels=c("Unchanged","Higher in mmMO","Higher in NSD3 MO")))
+
+svglite::svglite(paste0("nsd3_mo_volcano_plot_",ts,".svg"),width=4,height=3)
+res_g6 %>% as.data.frame() %>% 
+  dplyr::filter(!is.na(log2FoldChange) & !is.na(padj)) %>% 
+#  dplyr::mutate(deg=padj < 0.05 & abs(log2FoldChange) > log2(1.5) ) %>% 
+ggplot(aes(x=log2FoldChange,y=(-1*log10(padj)),color=deg,label=name)) + geom_point(size=0.7) + theme_bw()  +
+  scale_color_manual(values=cbPalette[c(1,6,7)],name="Differentially\nExpressed\nGene") +
+  geom_text_repel(data=as.data.frame(subset(res_g6,deg=="Unchanged" & name %in% c(goi_insitu,goi_nc,goi_ncns))),
+                  nudge_x       = 40,
+                  segment.size  = 0.3,
+                  segment.color = "black",
+                  direction="y") +
+    geom_text_repel(data=as.data.frame(subset(res_g6,deg=="Higher in NSD3 MO" & name %in% c(goi_insitu,goi_nc,goi_ncns))),
+                  nudge_x       = 50-as.data.frame(subset(res_g6,deg=="Higher in NSD3 MO" & name %in% c(goi_insitu,goi_nc,goi_ncns)))$log2FoldChange,
+                  segment.size  = 0.3,
+                  segment.color = "black",
+                  direction="y") +
+  geom_text_repel(data=as.data.frame(subset(res_g6,deg=="Higher in mmMO" & name %in% c(goi_insitu,goi_nc,goi_ncns))),
+                  nudge_x       = -50-as.data.frame(subset(res_g6,deg=="Higher in mmMO" & name %in% c(goi_insitu,goi_nc,goi_ncns)))$log2FoldChange,
+                  segment.size  = 0.3,
+                  segment.color = "black",
+                  direction="y")
+
+  #annotate("text",x=df$log2FoldChange,y=(-1*log10(df$padj)),label=df$name)
+dev.off()
+
+
+```
+
+
+# Caluculate Mean FPKM
+```{r}
+#ADD MEAN FPKMs from below
+f<-fpkm(dds_g6,robust=T)
+head(f<-f[,sort(colnames(f))])
+f_export<-as.data.frame(round(f[apply(f,1,sum) > 0,],3))
+f_export$symbol<-symbols[match(rownames(f_export),symbols$gene_id),"gene_name"]
+f_export$external<-names_with_ensembl_gene_id[match(rownames(f_export),names_with_ensembl_gene_id$ensembl_gene_id),"external_gene_name"]
+f_export$uni<-names_with_ensembl_gene_id[match(rownames(f_export),names_with_ensembl_gene_id$ensembl_gene_id),"uniprot_gn_symbol"]
+f_export<-tibble::rownames_to_column(f_export,var="Ensembl_GeneID") %>% 
+  dplyr::arrange(Ensembl_GeneID) %>% 
+  dplyr::rename(
+    "Ensembl GeneID" = "Ensembl_GeneID",
+    "Ensembl Symbol" = "symbol",
+    "External Symbol" = "external",
+    "Uniprot Symbol" = "uni",
+    "mmMO 1 FPKM" = "CON_S24",
+    "mmMO 2 FPKM" ="CON_S25",
+    "mmMO 3 FPKM" ="CON_S26",
+    "mmMO 4 FPKM" ="CON_S27",
+    "mmMO 5 FPKM" ="CON_S28",
+    "MO 1 FPKM" = "NSD3MO_S19",
+    "MO 2 FPKM" = "NSD3MO_S20",
+    "MO 3 FPKM" = "NSD3MO_S21",
+    "MO 4 FPKM" = "NSD3MO_S22",
+    "MO 5 FPKM" = "NSD3MO_S23") %>% 
+  dplyr::select(  "Ensembl GeneID", "Ensembl Symbol", "External Symbol", "Uniprot Symbol",
+    "mmMO 1 FPKM", "mmMO 2 FPKM", "mmMO 3 FPKM", "mmMO 4 FPKM", "mmMO 5 FPKM",
+    "MO 1 FPKM", "MO 2 FPKM", "MO 3 FPKM", "MO 4 FPKM", "MO 5 FPKM")
+    
+    
+  
+#f_export<-f_export[,c("Ensembl_GeneID","symbol","CON_S24","CON_S25","CON_S26","CON_S27","CON_S28","NSD3MO_S19","NSD3MO_S20","NSD3MO_S21","NSD3MO_S22","NSD3MO_S23")]
+write.csv(f_export,paste0("nsd3_rnaseq_Galgal6_FPKM_values_",ts,".csv"),quote=F,row.names=F)
+
+head(fDF<-data.frame(CON_Mean_FPKM=apply(f[,1:5],1,mean),CON_Sd_FPKM=apply(f[,1:5],1,sd),
+                       NSD3MO_Mean_FPKM=apply(f[,6:10],1,mean),NSD3MO_Sd_FPKM=apply(f[,6:10],1,sd)))
+
+idx<-match(rownames(res_g6_subset),rownames(fDF))
+res_g6_subset<-cbind(as.data.frame(res_g6_subset),fDF[idx,])
+#View(as.data.frame(res_g6_subset))
+
+head(res_g6_subset)
+res_g6_subset<-tibble::rownames_to_column(res_g6_subset,var="Ensembl_ID")
+res_g6_subset<-res_g6_subset[,c("Ensembl_ID","name","external","uni","baseMean","log2FoldChange","padj","CON_Mean_FPKM","CON_Sd_FPKM","NSD3MO_Mean_FPKM","NSD3MO_Sd_FPKM")]
+head(res_g6_subset)
+colnames(res_g6_subset)<-c("Ensembl ID","Name","External Name","Uniprot Name","Mean Counts","log2FoldChange","Padj","CON_Mean_FPKM","CON_Sd_FPKM","NSD3MO_Mean_FPKM","NSD3MO_Sd_FPKM")
+res_g6_subset<-res_g6_subset[with(res_g6_subset,order(Padj)),]
+#write.csv(res_g6_subset,paste0("nsd3_rnaseq_differentially_expressed_genes_Galgal6_",ts,".csv"),quote=F)
+#nrow(res_g6_subset)
+table(sign(res_g6_subset$log2FoldChange))
+
+```
+
+#ChIP 
+```{r}
+#high_expressed_genes<-rownames(fDF[fDF$CON_Mean_FPKM > 75 & fDF$CON_Mean_FPKM < 100,])
+
+length(up<-res_g6_subset[res_g6_subset$log2FoldChange > 0,"Ensembl ID"])
+length(dn<-res_g6_subset[res_g6_subset$log2FoldChange < 0,"Ensembl ID"])
+
+genes_up<-genes[up]
+genes_up$direction<-"up"
+genes_dn<-genes[dn]
+genes_dn$direction<-"down"
+
+my_genes<-c(genes_up,genes_dn)
+my_genes$direction<-factor(my_genes$direction,levels=c("up","down"))
+table(my_genes$direction)
+#tss = promoters(genes[high_expressed_genes], upstream = 0, downstream = 1)
+#tss[1:5]
+#tss<-keepSeqlevels(tss,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
+
+#my_genes<-genes[high_expressed_genes]
+my_genes<-keepSeqlevels(my_genes,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
+
+g_ci<-rtracklayer::import("../galGal6/1-ConMO_input_GTTTCG_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
+g_c1<-rtracklayer::import("../galGal6/1-ConMO_H3K36me2_ChIP_GTCCGC_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
+g_c2<-rtracklayer::import("../galGal6/2-ConMO_H3K36me2_ChIP_GTGAAA_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
+g_c3<-rtracklayer::import("../galGal6/3-ConMO_H3K36me2_ChIP_GTGGCC_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
+g_ni<-rtracklayer::import("../galGal6/1-NSD3MO_input_CCGTCC_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
+g_n1<-rtracklayer::import("../galGal6/1-NSD3MO_H3K36me2_ChIP_AGTCAA_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
+g_n2<-rtracklayer::import("../galGal6/2-NSD3MO_H3K36me2_ChIP_AGTTCC_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
+g_n3<-rtracklayer::import("../galGal6/3-NSD3MO_H3K36me2_ChIP_ATGTCA_L001_R1_001_trimmed_q55_Sat_Sep_05_2020_1207.bigWig",selection=my_genes+5000)
+g_ci<-keepSeqlevels(g_ci,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
+g_c1<-keepSeqlevels(g_c1,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
+g_c2<-keepSeqlevels(g_c2,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
+g_c3<-keepSeqlevels(g_c3,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
+g_ni<-keepSeqlevels(g_ni,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
+g_n1<-keepSeqlevels(g_n1,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
+g_n2<-keepSeqlevels(g_n2,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
+g_n3<-keepSeqlevels(g_n3,c(1:28,30:33,"W","Z"),pruning.mode = "coarse")
+
+
+mat_ci = normalizeToMatrix(g_ci, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
+mat_c1 = normalizeToMatrix(g_c1, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
+mat_c2 = normalizeToMatrix(g_c2, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
+mat_c3 = normalizeToMatrix(g_c3, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
+mat_ni = normalizeToMatrix(g_ni, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
+mat_n1 = normalizeToMatrix(g_n1, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
+mat_n2 = normalizeToMatrix(g_n2, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
+mat_n3 = normalizeToMatrix(g_n3, my_genes,  value_column = "score", extend = 5000, mean_mode = "w0", w = 50)
+
+
+col_fun_ci= colorRamp2(quantile(mat_ci, c(0, 0.99)), c("white", "blue"))
+col_fun_c1= colorRamp2(quantile(mat_c1, c(0, 0.99)), c("white", "blue"))
+col_fun_c2= colorRamp2(quantile(mat_c2, c(0, 0.99)), c("white", "blue"))
+col_fun_c3= colorRamp2(quantile(mat_c3, c(0, 0.99)), c("white", "blue"))
+col_fun_ni= colorRamp2(quantile(mat_ni, c(0, 0.99)), c("white", "blue"))
+col_fun_n1= colorRamp2(quantile(mat_n1, c(0, 0.99)), c("white", "blue"))
+col_fun_n2= colorRamp2(quantile(mat_n2, c(0, 0.99)), c("white", "blue"))
+col_fun_n3= colorRamp2(quantile(mat_n3, c(0, 0.99)), c("white", "blue"))
+
+EnrichedHeatmap(mat_ci, name = "1-Con Input", column_title = "1-Con Input",col=col_fun_ci,split=my_genes$direction, show_heatmap_legend = FALSE,
+                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
+EnrichedHeatmap(mat_c1, name = "1-Con ChIP", column_title = "1-Con ChIP",col=col_fun_c1,split=my_genes$direction, show_heatmap_legend = FALSE,
+                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
+EnrichedHeatmap(mat_c2, name = "2-Con ChIP", column_title = "2-Con ChIP",col=col_fun_c2,split=my_genes$direction, show_heatmap_legend = FALSE,
+                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
+EnrichedHeatmap(mat_c3, name = "3-Con ChIP", column_title = "3-Con ChIP",col=col_fun_c3,split=my_genes$direction, show_heatmap_legend = FALSE,
+                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
+EnrichedHeatmap(mat_ni, name = "1-NSD3 Input", column_title = "1-NSD3 Input",col=col_fun_ni,split=my_genes$direction, show_heatmap_legend = FALSE,
+                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
+EnrichedHeatmap(mat_n1, name = "1-NSD3 ChIP", column_title = "1-NSD3 ChIP",col=col_fun_n1,split=my_genes$direction, show_heatmap_legend = FALSE,
+                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
+EnrichedHeatmap(mat_n2, name = "2-NSD3 ChIP", column_title = "2-NSD3 ChIP",col=col_fun_n2,split=my_genes$direction, show_heatmap_legend = FALSE,
+                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) +
+EnrichedHeatmap(mat_n3, name = "3-NSD3 ChIP", column_title = "3-NSD3 ChIP",col=col_fun_n3,split=my_genes$direction, show_heatmap_legend = FALSE, 
+                 top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("red","black")),yaxis = F)) ) 
+```
+
+```{r}
+options(ucscChromosomeNames=FALSE)
+
+plotTranscript<-function(common_name="CCNG1",ylim=10,pad=c(100,500),rev=FALSE,logT=FALSE) {
+
+gene<-unique(symbols[grep(common_name,symbols$gene_name),"gene_id"])
+
+gene_start<-start(transcripts[transcripts$gene_id==gene])
+if (length(gene_start) > 1) { gene_start<-min(gene_start) }
+gene_end<-end(transcripts[transcripts$gene_id==gene])
+if (length(gene_end) > 1) { gene_end<-max(gene_end) }
+gene_chr<-unique(as.character(seqnames(transcripts[transcripts$gene_id==gene])))
+
+myImportFun <- function(file, selection){
+  (fls<-list.files("data","*.Aligned.out.sort.bam$",full.names=T) %>% stringr::str_subset("CON|NSD3MO"))
+  s_names<-sapply(strsplit(basename(fls),"\\."),function(x) x[1]) %>% gsub("1-","",.) %>% gsub("2-","",.) %>% gsub("3-","",.) %>% gsub("4-","",.) %>% gsub("5-","",.)
+  weights<-colData(dds_g6[,s_names])$sizeFactor
+  param_total <- ScanBamParam(what="mapq",flag = scanBamFlag(isUnmappedQuery = FALSE,isMinusStrand = NA,isMateMinusStrand = NA,isProperPair = TRUE),which=selection)
+  gr<-GRanges(seqnames=seqnames(selection),IRanges(start=start(selection):end(selection),width=1),strand="*")
+  mcols(gr)<-do.call(cbind,lapply(fls,function(file) as.numeric(coverage(suppressWarnings(GenomicAlignments::readGAlignmentPairs(file,use.names=F,param=param_total)))[[as.character(seqnames(selection))]])[start(selection):end(selection)]))
+  mcols(gr)<-sweep(as.matrix(mcols(gr)),MARGIN=2,weights,"/")
+  return(gr)
+}
+
+
+#myImportFun("data/1-CON_S24.Aligned.out.sort.bam",GRanges(seqnames=gene_chr,IRanges(start=gene_start,end=gene_end),strand="*"))
+paddedLog2<-function(x) {
+  if(logT) return(log2(x+0.1))
+  else(return(x))
+}
+
+gtrack <- GenomeAxisTrack(col="darkgray")
+y_label<-ifelse(logT,"Log2 Normalized Coverage","Normalized Coverage")
+txTr <- GeneRegionTrack(txdb, chromosome =  gene_chr, start = gene_start-1, end = gene_end+1,fill="gray",col="black",fontcolor.group="black",fill="darkgray",name="Ensembl Transcripts")
+dT<-DataTrack(range="data/1-CON_S24.Aligned.out.sort.bam", genome="galgal6", type="p", name=y_label, chromosome=gene_chr,importFunction = myImportFun,stream=T,col=cbPalette[6:7])
+plotTracks(list(gtrack,dT,txTr), from=gene_start-pad[1], to = gene_end+pad[2],transformation=paddedLog2,reverseStrand=rev,
+           cex=0.8,add53=TRUE,ylim=c(0,ylim),type=c("a","confint"),
+           groups=rep(c("Control", "NSD3MO"), 5),
+           col.axis="black",background.title="transparent",fontcolor.title="black")
+
+}
+
+```
+
+
+```{r nsd3_coverage,eval=F}
+#plotTranscript("CCNG1",ylim=10,pad=c(100,100),rev=TRUE,logT=TRUE)
+svglite::svglite(file=paste0("nsd3_coverage_",ts,".svg"),width=11,height=5)
+plotTranscript("NSD3",ylim=150,pad=c(3850,400),rev=TRUE,logT=FALSE)
+dev.off()
+```
+
+#zoom exon 3
+```{r}
+gene_start<-start(transcripts[transcripts$gene_id==gene])
+if (length(gene_start) > 1) { gene_start<-min(gene_start) }
+gene_end<-end(transcripts[transcripts$gene_id==gene])
+if (length(gene_end) > 1) { gene_end<-max(gene_end) }
+gene_chr<-unique(as.character(seqnames(transcripts[transcripts$gene_id==gene])))
+
+myImportFun <- function(file, selection){
+  (fls<-list.files("data","*.Aligned.out.sort.bam$",full.names=T) %>% stringr::str_subset("CON|NSD3MO"))
+  s_names<-sapply(strsplit(basename(fls),"\\."),function(x) x[1]) %>% gsub("1-","",.) %>% gsub("2-","",.) %>% gsub("3-","",.) %>% gsub("4-","",.) %>% gsub("5-","",.)
+  weights<-colData(dds_g6[,s_names])$sizeFactor
+  param_total <- ScanBamParam(what="mapq",flag = scanBamFlag(isUnmappedQuery = FALSE,isMinusStrand = NA,isMateMinusStrand = NA,isProperPair = TRUE),which=selection)
+  gr<-GRanges(seqnames=seqnames(selection),IRanges(start=start(selection):end(selection),width=1),strand="*")
+  mcols(gr)<-do.call(cbind,lapply(fls,function(file) as.numeric(coverage(suppressWarnings(GenomicAlignments::readGAlignmentPairs(file,use.names=F,param=param_total)))[[as.character(seqnames(selection))]])[start(selection):end(selection)]))
+  mcols(gr)<-sweep(as.matrix(mcols(gr)),MARGIN=2,weights,"/")
+  return(gr)
+}
+
+
+#myImportFun("data/1-CON_S24.Aligned.out.sort.bam",GRanges(seqnames=gene_chr,IRanges(start=gene_start,end=gene_end),strand="*"))
+paddedLog2<-function(x) {
+  if(logT) return(log2(x+0.1))
+  else(return(x))
+}
+
+gtrack <- GenomeAxisTrack(col="darkgray")
+y_label<-ifelse(logT,"Log2 Normalized Coverage","Normalized Coverage")
+txTr <- GeneRegionTrack(txdb, chromosome =  gene_chr, start = gene_start-1, end = gene_end+1,fill="gray",col="black",fontcolor.group="black",fill="darkgray",name="Ensembl Transcripts")
+dT<-DataTrack(range="data/1-CON_S24.Aligned.out.sort.bam", genome="galgal6", type="p", name=y_label, chromosome=gene_chr,importFunction = myImportFun,stream=T,col=cbPalette[6:7])
+plotTracks(list(gtrack,dT,txTr), from=gene_start-pad[1], to = gene_end+pad[2],transformation=paddedLog2,reverseStrand=rev,
+           cex=0.8,add53=TRUE,ylim=c(0,ylim),type=c("a","confint"),
+           groups=rep(c("Control", "NSD3MO"), 5),
+           col.axis="black",background.title="transparent",fontcolor.title="black")
+```
+
+
+#Compare to Williams dataset
+```{r}
+#download.file("https://s3.msi.umn.edu/gammilll/featureCounts_gammilll_williams_ens95_galGal6_q55_Mon_Nov_25_2019_1317.rdata",
+#              destfile="featureCounts_gammilll_williams_ens95_galGal6_q55_Mon_Nov_25_2019_1317.rdata")
+#load("featureCounts_gammilll_williams_ens95_galGal6_q55_Mon_Nov_25_2019_1317.rdata")
+load("featureCounts_gammilll_williams_ens100_galGal6_q55_Sun_Jul_05_2020_2039.rdata")
+
+(coldata<-as.data.frame(apply(rev_stranded_counts$counts,2,sum)))  # these are really unstranded
+colnames(coldata)<-"total_counts"
+dim(coldata)
+
+williams_dds_g6<-DESeqDataSetFromMatrix(rev_stranded_counts$counts,colData = coldata,design = ~1)
+
+colData(williams_dds_g6)$foxd3<-colnames(williams_dds_g6) %>% stringr::str_extract("CitrineNeg|CitrinePos") %>% as.factor
+colData(williams_dds_g6)$time <-colnames(williams_dds_g6) %>% stringr::str_extract("510ss|810ss|56ss") %>% as.factor
+colData(williams_dds_g6)$filename<-gsub("\\.repair","",colnames(williams_dds_g6)) %>% gsub("galGal6\\.","",.)
+colData(williams_dds_g6)$group<-factor(paste0(colData(williams_dds_g6)$time,"_",colData(williams_dds_g6)$foxd3))
+colnames(williams_dds_g6)<-sapply(strsplit(colData(williams_dds_g6)$filename,"\\."), function(x) x[1])
+```
+
+#Williams FPKM
+```{r}
+f_williams<-fpkm(williams_dds_g6,robust=T)
+head(f_williams<-f_williams[,sort(colnames(f_williams))])
+f_williams_export<-as.data.frame(f_williams[apply(f_williams,1,sum) > 0,])
+f_williams_export$symbol<-symbols[match(rownames(f_wiilliams_export),symbols$gene_id),"gene_name"]
+f_williams_export<-tibble::rownames_to_column(f_williams_export,var="Ensembl_ID")
+
+write.csv(f_williams_export,paste0("williams_rnaseq_Galgal6_FPKM_values_",ts,".csv"),quote=F,row.names=F)
+
+head(f_williams_DF<-data.frame(CitrineNeg_510ss_Mean_FPKM=apply(f_williams[,1:3],1,mean),CitrineNeg_510ss_Sd_FPKM=apply(f_williams[,1:3],1,sd),
+                     CitrinePos_56ss_Mean_FPKM=apply(f_williams[,4:7],1,mean),CitrinePos_56ss_Sd_FPKM=apply(f_williams[,4:7],1,sd),
+                     CitrinePos_810ss_Mean_FPKM=apply(f_williams[,8:11],1,mean),CitrinePos_810ss_Sd_FPKM=apply(f_williams[,8:11],1,sd)))
+                     
+                    
+
+
+```
+
+#Migration
+```{r}
+colData(williams_dds_migration_g6<-williams_dds_g6[,!stringr::str_detect(colData(williams_dds_g6)$foxd3,"CitrineNeg")])
+rownames(colData(williams_dds_migration_g6)) <- colnames(williams_dds_migration_g6)
+mcols(williams_dds_migration_g6)$basepairs<-rev_stranded_counts$annotation$Length
+mcols(williams_dds_migration_g6)$symbol<-symbols[match(rownames(williams_dds_migration_g6),symbols$gene_id),]$gene_name
+williams_dds_migration_g6<-estimateSizeFactors(williams_dds_migration_g6)
+plotPCA( normTransform(williams_dds_migration_g6 ) ,intgroup = c("time"),ntop=500)+
+  ggtitle("Williams NC migration Dataset") + theme_bw()
+
+colData(williams_dds_migration_g6)
+colData(williams_dds_migration_g6)$time<-droplevels(colData(williams_dds_migration_g6)$time)
+design(williams_dds_migration_g6)<-~time
+williams_dds_migration_g6<-DESeq(williams_dds_migration_g6)
+resultsNames(williams_dds_migration_g6)
+summary(williams_migration_res_g6<-results(williams_dds_migration_g6,contrast=c("time","810ss","56ss"),alpha=0.05,lfcThreshold = 0))
+
+summary(idx<-match(rownames(williams_migration_res_g6),symbols$gene_id))
+#williams_migration_res_g6$biotype<-symbols[idx,"gene_biotype"]
+williams_migration_res_g6$name<-symbols[idx,"gene_name"]
+
+summary(idx2<-match(rownames(williams_migration_res_g6),names_with_ensembl_gene_id$ensembl_gene_id))
+williams_migration_res_g6$external<-names_with_ensembl_gene_id[idx2,"external_gene_name"]
+#res_g6$hgnc<-names_with_ensembl_gene_id[idx2,"hgnc_symbol"]
+williams_migration_res_g6$uni<-names_with_ensembl_gene_id[idx2,"uniprot_gn_symbol"]
+
+
+nrow(williams_migration_res_g6_subset<-subset(williams_migration_res_g6,abs(log2FoldChange) > log2(2) & padj < 0.05))
+williams_migration_res_g6_subset<-tibble::rownames_to_column(as.data.frame(williams_migration_res_g6_subset),var="Ensembl ID")
+williams_migration_res_g6_subset<-williams_migration_res_g6_subset[with(williams_migration_res_g6_subset,order(padj)),]
+
+idx<-match(williams_migration_res_g6_subset$`Ensembl ID`,rownames(f_williams_DF))
+williams_migration_res_g6_subset<-cbind(as.data.frame(williams_migration_res_g6_subset),f_williams_DF[idx,])
+
+
+head(williams_migration_res_g6_subset)
+
+length(williams_migration_up<-subset(williams_migration_res_g6_subset,log2FoldChange > 1)$`Ensembl ID`)
+length(williams_migration_dn<-subset(williams_migration_res_g6_subset,log2FoldChange < -1)$`Ensembl ID`)
+
+write.csv(williams_migration_res_g6_subset[,c("Ensembl ID","name","external","uni","baseMean","log2FoldChange","padj","CitrineNeg_510ss_Mean_FPKM","CitrinePos_56ss_Mean_FPKM","CitrinePos_810ss_Mean_FPKM")],paste0("williams_DEGs_810ss_vs_56ss_CitrinePos_Galgal6_",ts,".csv"),quote=F,row.names=F)
+View(as.data.frame(williams_migration_res_g6_subset))
+```
+#Specification
+```{r}
+colData(williams_dds_specification_g6<-williams_dds_g6[,!stringr::str_detect(colData(williams_dds_g6)$time,"810ss")])
+rownames(colData(williams_dds_specification_g6)) <- colnames(williams_dds_specification_g6)
+#rownames(dds)<-substr(rownames(dds),1,18)
+mcols(williams_dds_specification_g6)$basepairs<-rev_stranded_counts$annotation$Length
+#mcols(dds)$mgi_symbol<-mgi[match(rownames(dds),mgi$ensembl_gene_id),]$mgi_symbol
+mcols(williams_dds_specification_g6)$symbol<-symbols[match(rownames(williams_dds_specification_g6),symbols$gene_id),]$gene_name
+
+williams_dds_g6<-estimateSizeFactors(williams_dds_specification_g6)
+plotPCA( normTransform( williams_dds_specification_g6) ,intgroup = c("foxd3","time"),ntop=500)+
+  ggtitle("Williams NC Specification Dataset") + theme_bw()
+
+
+colData(williams_dds_specification_g6)
+design(williams_dds_specification_g6)<-~foxd3
+williams_dds_specification_g6<-DESeq(williams_dds_specification_g6)
+resultsNames(williams_dds_specification_g6)
+summary(williams_res_g6<-results(williams_dds_specification_g6,contrast=c("foxd3","CitrinePos","CitrineNeg"),alpha=0.05,lfcThreshold = 0))
+
+summary(idx<-match(rownames(williams_res_g6),symbols$gene_id))
+williams_res_g6$biotype<-symbols[idx,"gene_biotype"]
+williams_res_g6$name<-symbols[idx,"gene_name"]
+
+nrow(williams_res_g6_subset<-subset(williams_res_g6,abs(log2FoldChange) > log2(2) & padj < 0.05))
+table(sign(williams_res_g6_subset$log2FoldChange))
+
+length(williams_up<-rownames(subset(williams_res_g6_subset,log2FoldChange > 1)))
+length(williams_dn<-rownames(subset(williams_res_g6_subset,log2FoldChange < -1)))
+
+View(as.data.frame(williams_res_g6)[williams_dn,])
+
+#View(as.data.frame(williams_res_g6_subset))
+```
+
+```{r}
+foxd3_gene_list<-list(williams_up=williams_up,williams_dn=williams_dn)
+lengths(foxd3_gene_list)
+names(foxd3_gene_list)
+nm<-lapply(seq_along(foxd3_gene_list), function(i) c(names(foxd3_gene_list)[[i]],"NA", foxd3_gene_list[[i]]))
+sink("foxd3_gene_list.gmt")
+writeLines(unlist(lapply(nm, paste, collapse="\t")))
+sink()
+nrow(temp<-as.data.frame(subset(res_g6,baseMean > 0 & !is.na(padj) )))
+temp$ensembl<-rownames(temp)
+temp<-temp[!is.na(temp$stat),]
+write.table(temp[,c("ensembl","stat")],file="nsd3_full_expression.rnk",sep="\t",quote=F,col.names=F,row.names = F)
+```
+
+```{r}
+table(res_g6_subset$williams<-case_when (
+  res_g6_subset$`Ensembl ID` %in% williams_up ~ "Premigratory NCC UP",
+  res_g6_subset$`Ensembl ID` %in% williams_dn ~ "Premigratory NCC DN",
+  TRUE ~ "Unchanged"
+))
+
+table(res_g6_subset$williams_migration<-case_when (
+  res_g6_subset$`Ensembl ID` %in% williams_migration_up ~ "Migratory NCC UP",
+  res_g6_subset$`Ensembl ID` %in% williams_migration_dn ~ "Migratory NCC DN",
+  TRUE ~ "Unchanged"
+))
+
+summary(idx<-match(res_g6_subset$`Ensembl ID`,rownames(williams_res_g6)))
+res_g6_subset$williams_specification_log2FC<-williams_res_g6[idx,]$log2FoldChange
+res_g6_subset$williams_specification_padj<-williams_res_g6[idx,]$padj
+
+summary(idx2<-match(res_g6_subset$`Ensembl ID`,rownames(williams_migration_res_g6)))
+res_g6_subset$williams_migration_log2FC<-williams_migration_res_g6[idx2,]$log2FoldChange
+res_g6_subset$williams_migration_padj<-williams_migration_res_g6[idx2,]$padj
+
+#View(res_g6_subset)
+
+
+res_g6_subset_export <- res_g6_subset %>% 
+    dplyr::rename(
+    "Ensembl GeneID" = "Ensembl ID",
+    "Ensembl Symbol" = "Name",
+    "External Symbol" = "External Name",
+    "Uniprot Symbol" = "Uniprot Name",
+    "Mean Counts" = "Mean Counts",
+    "NSD3 MO Log2 Fold Change" ="log2FoldChange",
+    "NSD3 MO Adjusted P-value" ="Padj",
+    "mmMO FPKM mean" = "CON_Mean_FPKM",
+    "mmMO FPKM sd" = "CON_Sd_FPKM",
+    "MO FPKM mean" = "NSD3MO_Mean_FPKM",
+    "MO FPKM sd" = "NSD3MO_Sd_FPKM",
+    "Premigratory Neural Crest Classification" = "williams",
+    "Neural Crest Premigratory Log2 Fold Change" = "williams_specification_log2FC",
+    "Neural Crest Premigratory Adjusted P-value" = "williams_specification_padj",
+    "Migratory Neural Crest Classification" = "williams_migration",
+    "Neural Crest Migratory Log2 Fold Change" = "williams_migration_log2FC",
+    "Neural Crest Migratory Adjusted P-value" = "williams_migration_padj") %>% 
+  dplyr::select("Ensembl GeneID", "Ensembl Symbol", "External Symbol", "Uniprot Symbol",
+    "Mean Counts", "NSD3 MO Log2 Fold Change", "NSD3 MO Adjusted P-value",
+    "mmMO FPKM mean", "mmMO FPKM sd", "MO FPKM mean", "MO FPKM sd",
+    "Premigratory Neural Crest Classification",  "Neural Crest Premigratory Log2 Fold Change", "Neural Crest Premigratory Adjusted P-value",
+    "Migratory Neural Crest Classification", "Neural Crest Migratory Log2 Fold Change", "Neural Crest Migratory Adjusted P-value")
+  
+write.csv(res_g6_subset_export,paste0("nsd3_rnaseq_differentially_expressed_genes_Galgal6_",ts,".csv"),quote=F,row.names=F)
+#nrow(res_g6_subset)
+```
+
+
+#IGV
+```{r}
+https://s3.msi.umn.edu/gammilll/g6/1-CON_S24_q55_scaled.bigWig
+https://s3.msi.umn.edu/gammilll/g6/2-CON_S25_q55_scaled.bigWig
+https://s3.msi.umn.edu/gammilll/g6/3-CON_S26_q55_scaled.bigWig
+https://s3.msi.umn.edu/gammilll/g6/4-CON_S27_q55_scaled.bigWig
+https://s3.msi.umn.edu/gammilll/g6/5-CON_S28_q55_scaled.bigWig
+
+https://s3.msi.umn.edu/gammilll/g6/1-NSD3MO_S19_q55_scaled.bigWig
+https://s3.msi.umn.edu/gammilll/g6/2-NSD3MO_S20_q55_scaled.bigWig
+https://s3.msi.umn.edu/gammilll/g6/3-NSD3MO_S21_q55_scaled.bigWig
+https://s3.msi.umn.edu/gammilll/g6/4-NSD3MO_S22_q55_scaled.bigWig
+https://s3.msi.umn.edu/gammilll/g6/5-NSD3MO_S23_q55_scaled.bigWig
+
+
 ```
 
